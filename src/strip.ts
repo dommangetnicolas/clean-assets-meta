@@ -1,0 +1,180 @@
+/**
+ * Removes metadata from images with exiftool (brew install exiftool).
+ *
+ * By default everything goes except what's needed to display the image the same
+ * way: the orientation and the ICC color profile. `all` removes those too;
+ * `gpsOnly` removes only location data. macOS extended attributes (download
+ * source, quarantine, Finder tags) are cleared as well unless `keepXattrs`;
+ * com.apple.provenance stays, as macOS protects it and doesn't let it be removed.
+ */
+
+import { execFile, spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
+
+export const EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".heic", ".heif", ".avif", ".tif", ".tiff", ".webp", ".gif"]);
+export const isImage = (file: string) => EXTENSIONS.has(path.extname(file).toLowerCase());
+
+export type StripOptions = {
+  all?: boolean;
+  gpsOnly?: boolean;
+  keep?: string[];
+  keepXattrs?: boolean;
+};
+
+/** A file to clean and where the cleaned file goes (the same path when in place). */
+export type Target = { src: string; dest: string };
+
+let version: Promise<string | null> | null = null;
+/** exiftool's version, or null when it isn't installed. */
+export const exiftoolVersion = () =>
+  (version ??= run("exiftool", ["-ver"]).then(({ stdout }) => stdout.trim(), () => null));
+
+/**
+ * Runs exiftool on many files at once, passing their names through stdin so a
+ * large folder doesn't hit the argument length limit. exiftool exits 1 when some
+ * files fail and still handles the others, so the exit code is returned, not thrown.
+ */
+function exiftool(args: string[], files: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const p = spawn("exiftool", [...args, "-charset", "filename=utf8", "-@", "-"]);
+    let stdout = "", stderr = "";
+    p.stdout.setEncoding("utf8").on("data", (d) => (stdout += d));
+    p.stderr.setEncoding("utf8").on("data", (d) => (stderr += d));
+    p.on("error", reject);
+    p.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+    p.stdin.end(files.join("\n") + "\n");
+  });
+}
+
+/** The exiftool arguments that remove metadata for these options. */
+export function stripArgs(opts: StripOptions = {}): string[] {
+  if (opts.gpsOnly) {
+    if (opts.all || opts.keep?.length) throw new Error("--gps-only can't be combined with --all or --keep");
+    // The EXIF GPS block, plus GPS tags stored elsewhere (XMP exif:GPS…, QuickTime keys)
+    return ["-gps:all=", "-GPS*="];
+  }
+  const keep = [...(opts.all ? [] : ["Orientation", "ICC_Profile"]), ...(opts.keep ?? [])];
+  return ["-all=", ...(keep.length ? ["-tagsFromFile", "@", ...keep.map((t) => `-${t}`)] : [])];
+}
+
+/**
+ * The images to clean: files given directly (any supported extension) and the
+ * images in folders given, in subfolders too with `recursive`. With `outDir`,
+ * each copy keeps its path relative to the folder it was found in.
+ */
+export function collectTargets(inputs: string[], { recursive = false, outDir }: { recursive?: boolean; outDir?: string } = {}): Target[] {
+  const targets: Target[] = [];
+  const seen = new Set<string>();
+  const add = (src: string, rel: string) => {
+    const abs = path.resolve(src);
+    if (seen.has(abs)) return;
+    seen.add(abs);
+    targets.push({ src: abs, dest: outDir ? path.resolve(outDir, rel) : abs });
+  };
+
+  for (const input of inputs) {
+    const stat = fs.statSync(input, { throwIfNoEntry: false });
+    if (!stat) throw new Error(`not found: ${input}`);
+    if (stat.isFile()) {
+      if (!isImage(input)) throw new Error(`not a supported image: ${input}`);
+      add(input, path.basename(input));
+    } else if (stat.isDirectory()) {
+      for (const e of fs.readdirSync(input, { recursive, withFileTypes: true })) {
+        // ._name files are macOS resource forks on non-Apple disks, not images
+        if (!e.isFile() || !isImage(e.name) || e.name.startsWith("._")) continue;
+        const file = path.join(e.parentPath, e.name);
+        add(file, path.relative(input, file));
+      }
+    }
+  }
+
+  const dests = new Set<string>();
+  for (const t of targets) {
+    if (dests.has(t.dest)) throw new Error(`two files would be written to ${t.dest}`);
+    dests.add(t.dest);
+  }
+  return targets;
+}
+
+// File system details exiftool reports, not metadata stored in the image
+const NOT_METADATA = new Set(["ExifTool", "System", "File", "Composite"]);
+
+/** The metadata tags in each file, as "Group:Tag" → value, by absolute path. */
+export async function readTags(files: string[]): Promise<Map<string, Record<string, unknown>>> {
+  const tags = new Map<string, Record<string, unknown>>();
+  if (!files.length) return tags;
+  const { stdout } = await exiftool(["-j", "-a", "-G1", "-s", "-n"], files);
+  for (const entry of JSON.parse(stdout || "[]") as Record<string, unknown>[]) {
+    const own: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(entry)) {
+      const group = key.split(":")[0];
+      if (key !== "SourceFile" && key.includes(":") && !NOT_METADATA.has(group)) own[key] = value;
+    }
+    tags.set(path.resolve(String(entry.SourceFile)), own);
+  }
+  return tags;
+}
+
+// Image structure exiftool lists as tags, which no strip removes: the PNG header,
+// the JPEG's JFIF segment, HEIC/AVIF codec setup (QuickTime, Meta), and
+// YCbCrPositioning, which exiftool adds to any EXIF block it writes
+const PNG_HEADER = new Set(["ImageWidth", "ImageHeight", "BitDepth", "ColorType", "Compression", "Filter", "Interlace"]);
+const STRUCTURE_GROUPS = new Set(["JFIF", "QuickTime", "Meta"]);
+
+/** How much metadata a file carries: tags beyond the image structure, location, color profile. */
+export function summarize(tags: Record<string, unknown>) {
+  const keys = Object.keys(tags);
+  const isIcc = (k: string) => k.startsWith("ICC");
+  const metadata = keys.filter((k) => {
+    const [group, name] = k.split(":");
+    return !isIcc(k) && !STRUCTURE_GROUPS.has(group) && name !== "YCbCrPositioning" && !(group === "PNG" && PNG_HEADER.has(name));
+  });
+  return { tags: metadata.length, gps: metadata.some((k) => /GPS/i.test(k)), icc: keys.some(isIcc) };
+}
+
+export type StripResult = { cleaned: string[]; failed: { file: string; error: string }[] };
+
+/**
+ * Cleans the targets. In place, the original is replaced; with a different
+ * dest, the file is copied there first (an existing file there is an error).
+ */
+export async function strip(targets: Target[], opts: StripOptions = {}): Promise<StripResult> {
+  if (!(await exiftoolVersion())) throw new Error("exiftool not found (brew install exiftool)");
+  const args = stripArgs(opts);
+  const failed: StripResult["failed"] = [];
+
+  const ready: string[] = [];
+  for (const { src, dest } of targets) {
+    if (src === dest) { ready.push(dest); continue; }
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
+      ready.push(dest);
+    } catch (e) {
+      failed.push({ file: src, error: (e as NodeJS.ErrnoException).code === "EEXIST" ? `already exists: ${dest}` : String(e) });
+    }
+  }
+
+  // -overwrite_original swaps in a new file, which drops extended attributes; writing in place keeps them
+  const overwrite = opts.keepXattrs ? "-overwrite_original_in_place" : "-overwrite_original";
+  const { stderr } = ready.length ? await exiftool([overwrite, "-m", ...args], ready) : { stderr: "" };
+  // exiftool errors read "Error: <message> - <file>"
+  const errors = new Map<string, string>();
+  for (const line of stderr.split("\n")) {
+    const m = line.match(/^Error: (.*) - (.+)$/);
+    if (m) errors.set(path.resolve(m[2]), m[1]);
+  }
+
+  const cleaned: string[] = [];
+  for (const file of ready) {
+    const error = errors.get(file);
+    if (error) { failed.push({ file, error }); continue; }
+    if (!opts.keepXattrs && process.platform === "darwin") await run("xattr", ["-c", file]).catch(() => {});
+    cleaned.push(file);
+  }
+  return { cleaned, failed };
+}
