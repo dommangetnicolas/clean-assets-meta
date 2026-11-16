@@ -37,6 +37,10 @@ async function stripped(src: string, name: string, all = false): Promise<string>
   return file;
 }
 
+const sizeOf = async (file: string) => {
+  const [{ ImageWidth: width, ImageHeight: height }] = JSON.parse(execFileSync("exiftool", ["-j", "-n", "-ImageWidth", "-ImageHeight", file], { encoding: "utf8" }));
+  return { width: width as number, height: height as number };
+};
 const tagsOf = async (file: string) => (await readTags([file])).get(path.resolve(file)) ?? {};
 const names = async (file: string) => Object.keys(await tagsOf(file)).map((k) => k.split(":")[1]);
 
@@ -45,11 +49,14 @@ after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe("applyArgs", () => {
   test("copies all tags to the same groups, then fills in orientation and color profile", () => {
-    assert.deepEqual(applyArgs("r.jpg"), [
+    assert.deepEqual(applyArgs("r.jpg", {}, { width: 40, height: 30 }), [
       ["-tagsFromFile", "r.jpg", "-all:all", "--Orientation"],
-      ["-wm", "cg", "-tagsFromFile", "r.jpg", "-Orientation"],
+      ["-if", "not $Orientation and $ImageWidth# == 40 and $ImageHeight# == 30", "-tagsFromFile", "r.jpg", "-Orientation"],
       ["-if", "not $ICC_Profile:all", "-tagsFromFile", "r.jpg", "-ICC_Profile"],
     ]);
+  });
+  test("never copies the orientation without the reference's size", () => {
+    assert.ok(!applyArgs("r.jpg").flat().includes("-Orientation"));
   });
   test("leaves out excluded tags", () => {
     const [copy, ...fill] = applyArgs("r.jpg", { noGps: true, exclude: ["Artist", "IFD0:Orientation", "icc_profile"] });
@@ -128,6 +135,18 @@ describe("apply", () => {
     const tags = await tagsOf(clean);
     assert.equal(tags["IFD0:Orientation"], 1);
     assert.equal(tags["ICC_Profile:ProfileDescription"], "Adobe RGB (1998)");
+    assert.equal(tags["IFD0:Make"], "Apple");
+  });
+
+  test("leaves an export without orientation as it is when its size differs", { skip: process.platform !== "darwin" && "needs sips" }, async () => {
+    const original = tagged("tiny.jpg", "upright-orig.jpg");
+    const clean = await stripped(original, "upright-clean.jpg", true);
+    // An export already rotated upright and resized, without orientation
+    execFileSync("sips", ["--resampleHeightWidth", "12", "8", clean, "--out", clean], { stdio: "ignore" });
+    assert.deepEqual(await sizeOf(clean), { width: 8, height: 12 });
+    await apply(pairTargets(original, [clean]).pairs);
+    const tags = await tagsOf(clean);
+    assert.equal(tags["IFD0:Orientation"], undefined);
     assert.equal(tags["IFD0:Make"], "Apple");
   });
 

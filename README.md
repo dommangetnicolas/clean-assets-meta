@@ -9,8 +9,12 @@ Requires Node 24+ and exiftool (`brew install exiftool`).
 
 ```sh
 pnpm install
-pnpm link --global              # makes `clean-assets-meta` available everywhere
+pnpm add -g "$PWD"              # makes `clean-assets-meta` available everywhere
 ```
+
+On pnpm 11 and earlier, `pnpm link --global` does the same; `npm link` works
+with any version. To run it without installing, use `pnpm start <command>`
+from this folder.
 
 ## Usage
 
@@ -47,7 +51,9 @@ clean-assets-meta apply original.jpg clean.jpg --no-gps -x Artist
 Tags go back to where they were in the reference (EXIF, XMP, IPTC…), added to
 what the image already has; tags of the same name are replaced. The
 orientation and color profile are only copied when the image has none, since
-an edited copy may have been rotated or converted. Images are updated in place
+an edited copy may have been rotated or converted. The orientation also needs
+the image to have the reference's pixel size: an export without one is usually
+already upright, and rotating it again would turn it sideways. Images are updated in place
 and keep their extended attributes.
 
 | Option | |
