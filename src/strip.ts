@@ -8,15 +8,11 @@
  * com.apple.provenance stays, as macOS protects it and doesn't let it be removed.
  */
 
-import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
+import { exiftool, isImage, parseErrors, requireExiftool, run } from "./exiftool.ts";
 
-const run = promisify(execFile);
-
-export const EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".heic", ".heif", ".avif", ".tif", ".tiff", ".webp", ".gif"]);
-export const isImage = (file: string) => EXTENSIONS.has(path.extname(file).toLowerCase());
+export { EXTENSIONS, isImage } from "./exiftool.ts";
 
 export type StripOptions = {
   all?: boolean;
@@ -28,28 +24,6 @@ export type StripOptions = {
 /** A file to clean and where the cleaned file goes (the same path when in place). */
 export type Target = { src: string; dest: string };
 
-let version: Promise<string | null> | null = null;
-/** exiftool's version, or null when it isn't installed. */
-export const exiftoolVersion = () =>
-  (version ??= run("exiftool", ["-ver"]).then(({ stdout }) => stdout.trim(), () => null));
-
-/**
- * Runs exiftool on many files at once, passing their names through stdin so a
- * large folder doesn't hit the argument length limit. exiftool exits 1 when some
- * files fail and still handles the others, so the exit code is returned, not thrown.
- */
-function exiftool(args: string[], files: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const p = spawn("exiftool", [...args, "-charset", "filename=utf8", "-@", "-"]);
-    let stdout = "", stderr = "";
-    p.stdout.setEncoding("utf8").on("data", (d) => (stdout += d));
-    p.stderr.setEncoding("utf8").on("data", (d) => (stderr += d));
-    p.on("error", reject);
-    p.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
-    p.stdin.end(files.join("\n") + "\n");
-  });
-}
-
 /** The exiftool arguments that remove metadata for these options. */
 export function stripArgs(opts: StripOptions = {}): string[] {
   if (opts.gpsOnly) {
@@ -59,6 +33,16 @@ export function stripArgs(opts: StripOptions = {}): string[] {
   }
   const keep = [...(opts.all ? [] : ["Orientation", "ICC_Profile"]), ...(opts.keep ?? [])];
   return ["-all=", ...(keep.length ? ["-tagsFromFile", "@", ...keep.map((t) => `-${t}`)] : [])];
+}
+
+/** The images in a folder, in subfolders too with `recursive`. */
+export function listImages(dir: string, recursive = false): string[] {
+  const files: string[] = [];
+  for (const e of fs.readdirSync(dir, { recursive, withFileTypes: true })) {
+    // ._name files are macOS resource forks on non-Apple disks, not images
+    if (e.isFile() && isImage(e.name) && !e.name.startsWith("._")) files.push(path.join(e.parentPath, e.name));
+  }
+  return files;
 }
 
 /**
@@ -83,12 +67,7 @@ export function collectTargets(inputs: string[], { recursive = false, outDir }: 
       if (!isImage(input)) throw new Error(`not a supported image: ${input}`);
       add(input, path.basename(input));
     } else if (stat.isDirectory()) {
-      for (const e of fs.readdirSync(input, { recursive, withFileTypes: true })) {
-        // ._name files are macOS resource forks on non-Apple disks, not images
-        if (!e.isFile() || !isImage(e.name) || e.name.startsWith("._")) continue;
-        const file = path.join(e.parentPath, e.name);
-        add(file, path.relative(input, file));
-      }
+      for (const file of listImages(input, recursive)) add(file, path.relative(input, file));
     }
   }
 
@@ -143,7 +122,7 @@ export type StripResult = { cleaned: string[]; failed: { file: string; error: st
  * dest, the file is copied there first (an existing file there is an error).
  */
 export async function strip(targets: Target[], opts: StripOptions = {}): Promise<StripResult> {
-  if (!(await exiftoolVersion())) throw new Error("exiftool not found (brew install exiftool)");
+  await requireExiftool();
   const args = stripArgs(opts);
   const failed: StripResult["failed"] = [];
 
@@ -162,12 +141,7 @@ export async function strip(targets: Target[], opts: StripOptions = {}): Promise
   // -overwrite_original swaps in a new file, which drops extended attributes; writing in place keeps them
   const overwrite = opts.keepXattrs ? "-overwrite_original_in_place" : "-overwrite_original";
   const { stderr } = ready.length ? await exiftool([overwrite, "-m", ...args], ready) : { stderr: "" };
-  // exiftool errors read "Error: <message> - <file>"
-  const errors = new Map<string, string>();
-  for (const line of stderr.split("\n")) {
-    const m = line.match(/^Error: (.*) - (.+)$/);
-    if (m) errors.set(path.resolve(m[2]), m[1]);
-  }
+  const errors = parseErrors(stderr);
 
   const cleaned: string[] = [];
   for (const file of ready) {
