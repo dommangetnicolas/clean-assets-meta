@@ -6,8 +6,11 @@ import { promisify } from "node:util";
 
 export const run = promisify(execFile);
 
-export const EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".heic", ".heif", ".avif", ".tif", ".tiff", ".webp", ".gif"]);
-export const isImage = (file: string) => EXTENSIONS.has(path.extname(file).toLowerCase());
+export const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".heic", ".heif", ".avif", ".tif", ".tiff", ".webp", ".gif"]);
+/** QuickTime-based videos, the ones exiftool can write. */
+export const VIDEO_EXTENSIONS = new Set([".mp4", ".m4v", ".mov", ".3gp"]);
+export const EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
+export const isMedia = (file: string) => EXTENSIONS.has(path.extname(file).toLowerCase());
 
 let version: Promise<string | null> | null = null;
 /** exiftool's version, or null when it isn't installed. */

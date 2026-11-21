@@ -4,7 +4,7 @@
  * clean-assets-meta apply <reference> <file|folder>... [options]
  * clean-assets-meta presets
  *
- * Removes metadata from images, or copies it back from a reference file.
+ * Removes metadata from images and videos, or copies it back from a reference file.
  * Requires exiftool (brew install exiftool).
  */
 
@@ -22,9 +22,9 @@ const PRESET_HELP = `  -p, --preset <name>  use the options saved under this nam
 
 const STRIP_USAGE = `Usage: clean-assets-meta strip <file|folder>... [options]
 
-Removes metadata from images (JPEG, PNG, HEIC, AVIF, TIFF, WebP, GIF), keeping
-the orientation and color profile so they look the same. Files are replaced
-unless --out is given.
+Removes metadata from images (JPEG, PNG, HEIC, AVIF, TIFF, WebP, GIF) and videos
+(MP4, MOV, M4V, 3GP), keeping the orientation and color profile so they look the
+same. Files are replaced unless --out is given.
 
 Options:
   -r, --recursive      also look in subfolders
@@ -41,17 +41,17 @@ one a preset turns on, e.g. --no-all.`;
 
 const APPLY_USAGE = `Usage: clean-assets-meta apply <reference> <file|folder>... [options]
 
-Copies the metadata of a reference file onto images, e.g. to put back what
-strip removed. Tags are added to what the image already has, in place.
+Copies the metadata of a reference file onto images or videos, e.g. to put back
+what strip removed. Tags are added to what the file already has, in place.
 
-  apply original.jpg clean.jpg        one reference, one or more images
+  apply original.jpg clean.jpg        one reference, one or more files
   apply ./originals ./clean -r        folders: matched by relative path
 
 Options:
   -r, --recursive      also look in subfolders
       --no-gps         leave out location data
   -x, --exclude <tag>  leave out this tag, e.g. -x Artist or -x XMP:all (repeatable)
-${PRESET_HELP}        list which reference goes to which image, change nothing
+${PRESET_HELP}        list which reference goes to which file, change nothing
   -h, --help           show this help
 
 A flag given on the command line wins over a preset's; --no-<flag> turns off
@@ -72,7 +72,7 @@ Lists the presets you can use with --preset <name>. Save one with
 const USAGE = `Usage: clean-assets-meta <command> [options]
 
 Commands:
-  strip <file|folder>...               remove metadata from images
+  strip <file|folder>...               remove metadata from images and videos
   apply <reference> <file|folder>...   copy metadata from a reference file
   presets                              list saved presets
 
@@ -171,7 +171,7 @@ async function stripCommand(args: string[]) {
   const opts = { all: values.all, gpsOnly: values["gps-only"], keep, keepXattrs: values["keep-xattrs"] };
   try {
     const targets = collectTargets(positionals, { recursive: values.recursive, outDir: values.out });
-    if (!targets.length) fail("no images found" + (values.recursive ? "" : " (use -r to look in subfolders)"));
+    if (!targets.length) fail("no images or videos found" + (values.recursive ? "" : " (use -r to look in subfolders)"));
 
     if (dryRun) {
       const tags = await readTags(targets.map((t) => t.src));
@@ -181,11 +181,11 @@ async function stripCommand(args: string[]) {
         const notes = [s.gps && "has location", s.icc && "color profile"].filter(Boolean).join(", ");
         console.log(`${rel(t.src)}${dest}: ${plural(s.tags, "metadata tag")}${notes ? ` (${notes})` : ""}`);
       }
-      console.log(`\n${plural(targets.length, "image")}, nothing changed (dry run)`);
+      console.log(`\n${plural(targets.length, "file")}, nothing changed (dry run)`);
     } else {
       const { cleaned, failed } = await strip(targets, opts);
       for (const f of failed) console.error(`failed: ${rel(f.file)}: ${f.error}`);
-      console.log(`cleaned ${plural(cleaned.length, "image")}${failed.length ? `, ${failed.length} failed` : ""}`);
+      console.log(`cleaned ${plural(cleaned.length, "file")}${failed.length ? `, ${failed.length} failed` : ""}`);
       if (failed.length) process.exit(1);
     }
   } catch (e) {
@@ -197,21 +197,21 @@ async function applyCommand(args: string[]) {
   const { options, positionals, dryRun } = parse("apply", args, APPLY_OPTIONS, APPLY_USAGE);
   const values = options as { recursive?: boolean; gps?: boolean; exclude?: string[] };
   const [reference, ...targets] = positionals;
-  if (!targets.length) fail(`give a reference file and the images to apply it to\n\n${APPLY_USAGE}`);
+  if (!targets.length) fail(`give a reference file and the files to apply it to\n\n${APPLY_USAGE}`);
 
   try {
     const { pairs, unmatched } = pairTargets(reference, targets, { recursive: values.recursive });
     for (const f of unmatched) console.error(`skipped: ${rel(f)}: no file at the same path in ${rel(path.resolve(reference))}`);
-    if (!pairs.length) fail("no images found" + (values.recursive ? "" : " (use -r to look in subfolders)"));
+    if (!pairs.length) fail("no images or videos found" + (values.recursive ? "" : " (use -r to look in subfolders)"));
 
     if (dryRun) {
       for (const p of pairs) console.log(`${rel(p.ref)} → ${rel(p.dest)}`);
-      console.log(`\n${plural(pairs.length, "image")}, nothing changed (dry run)`);
+      console.log(`\n${plural(pairs.length, "file")}, nothing changed (dry run)`);
     } else {
       const { applied, failed } = await apply(pairs, { noGps: values.gps === false, exclude: values.exclude });
       for (const f of failed) console.error(`failed: ${rel(f.file)}: ${f.error}`);
       const notes = [failed.length && `${failed.length} failed`, unmatched.length && `${unmatched.length} skipped`].filter(Boolean);
-      console.log(`applied metadata to ${plural(applied.length, "image")}${notes.length ? `, ${notes.join(", ")}` : ""}`);
+      console.log(`applied metadata to ${plural(applied.length, "file")}${notes.length ? `, ${notes.join(", ")}` : ""}`);
       if (failed.length || unmatched.length) process.exit(1);
     }
   } catch (e) {

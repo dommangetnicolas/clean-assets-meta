@@ -1,18 +1,19 @@
 /**
- * Removes metadata from images with exiftool (brew install exiftool).
+ * Removes metadata from images and MP4/MOV videos with exiftool (brew install exiftool).
  *
  * By default everything goes except what's needed to display the image the same
  * way: the orientation and the ICC color profile. `all` removes those too;
- * `gpsOnly` removes only location data. macOS extended attributes (download
+ * `gpsOnly` removes only location data. A video's rotation and color information
+ * are part of its tracks and always stay, and its header dates are set to zero. macOS extended attributes (download
  * source, quarantine, Finder tags) are cleared as well unless `keepXattrs`;
  * com.apple.provenance stays, as macOS protects it and doesn't let it be removed.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { exiftool, isImage, parseErrors, requireExiftool, run } from "./exiftool.ts";
+import { exiftool, isMedia, parseErrors, requireExiftool, run } from "./exiftool.ts";
 
-export { EXTENSIONS, isImage } from "./exiftool.ts";
+export { EXTENSIONS, isMedia } from "./exiftool.ts";
 
 export type StripOptions = {
   all?: boolean;
@@ -24,23 +25,29 @@ export type StripOptions = {
 /** A file to clean and where the cleaned file goes (the same path when in place). */
 export type Target = { src: string; dest: string };
 
+// A video's creation and modification dates sit in its movie and track headers,
+// which -all= leaves alone; they can't be removed, only set to zero. Images have
+// no such tags, so these do nothing to them.
+const VIDEO_DATES = ["-QuickTime:CreateDate=", "-QuickTime:ModifyDate=", "-Track*Date=", "-Media*Date="];
+
 /** The exiftool arguments that remove metadata for these options. */
 export function stripArgs(opts: StripOptions = {}): string[] {
   if (opts.gpsOnly) {
     if (opts.all || opts.keep?.length) throw new Error("--gps-only can't be combined with --all or --keep");
-    // The EXIF GPS block, plus GPS tags stored elsewhere (XMP exif:GPS…, QuickTime keys)
-    return ["-gps:all=", "-GPS*="];
+    // The EXIF GPS block, GPS tags stored elsewhere (XMP exif:GPS…, video keys),
+    // and the place name and accuracy Apple stores next to a video's coordinates
+    return ["-gps:all=", "-GPS*=", "-QuickTime:Location*="];
   }
   const keep = [...(opts.all ? [] : ["Orientation", "ICC_Profile"]), ...(opts.keep ?? [])];
-  return ["-all=", ...(keep.length ? ["-tagsFromFile", "@", ...keep.map((t) => `-${t}`)] : [])];
+  return ["-all=", ...VIDEO_DATES, ...(keep.length ? ["-tagsFromFile", "@", ...keep.map((t) => `-${t}`)] : [])];
 }
 
 /** The images in a folder, in subfolders too with `recursive`. */
-export function listImages(dir: string, recursive = false): string[] {
+export function listMedia(dir: string, recursive = false): string[] {
   const files: string[] = [];
   for (const e of fs.readdirSync(dir, { recursive, withFileTypes: true })) {
     // ._name files are macOS resource forks on non-Apple disks, not images
-    if (e.isFile() && isImage(e.name) && !e.name.startsWith("._")) files.push(path.join(e.parentPath, e.name));
+    if (e.isFile() && isMedia(e.name) && !e.name.startsWith("._")) files.push(path.join(e.parentPath, e.name));
   }
   return files;
 }
@@ -64,10 +71,10 @@ export function collectTargets(inputs: string[], { recursive = false, outDir }: 
     const stat = fs.statSync(input, { throwIfNoEntry: false });
     if (!stat) throw new Error(`not found: ${input}`);
     if (stat.isFile()) {
-      if (!isImage(input)) throw new Error(`not a supported image: ${input}`);
+      if (!isMedia(input)) throw new Error(`not a supported image or video: ${input}`);
       add(input, path.basename(input));
     } else if (stat.isDirectory()) {
-      for (const file of listImages(input, recursive)) add(file, path.relative(input, file));
+      for (const file of listMedia(input, recursive)) add(file, path.relative(input, file));
     }
   }
 
@@ -99,18 +106,23 @@ export async function readTags(files: string[]): Promise<Map<string, Record<stri
 }
 
 // Image structure exiftool lists as tags, which no strip removes: the PNG header,
-// the JPEG's JFIF segment, HEIC/AVIF codec setup (QuickTime, Meta), and
-// YCbCrPositioning, which exiftool adds to any EXIF block it writes
+// the JPEG's JFIF segment, HEIC/AVIF codec setup (QuickTime, Meta), a video's
+// movie and track headers (QuickTime, Track1, Track2…), and YCbCrPositioning,
+// which exiftool adds to any EXIF block it writes
 const PNG_HEADER = new Set(["ImageWidth", "ImageHeight", "BitDepth", "ColorType", "Compression", "Filter", "Interlace"]);
 const STRUCTURE_GROUPS = new Set(["JFIF", "QuickTime", "Meta"]);
+const isStructureGroup = (group: string) => STRUCTURE_GROUPS.has(group) || /^Track\d+$/.test(group);
+// The header dates are the exception: strip sets them to zero, and any other value is metadata
+const isZeroDate = (value: unknown) => typeof value === "string" && /^[0:\s]+$/.test(value);
 
-/** How much metadata a file carries: tags beyond the image structure, location, color profile. */
+/** How much metadata a file carries: tags beyond the file's structure, location, color profile. */
 export function summarize(tags: Record<string, unknown>) {
   const keys = Object.keys(tags);
   const isIcc = (k: string) => k.startsWith("ICC");
   const metadata = keys.filter((k) => {
     const [group, name] = k.split(":");
-    return !isIcc(k) && !STRUCTURE_GROUPS.has(group) && name !== "YCbCrPositioning" && !(group === "PNG" && PNG_HEADER.has(name));
+    if (isStructureGroup(group)) return name.endsWith("Date") && !isZeroDate(tags[k]);
+    return !isIcc(k) && name !== "YCbCrPositioning" && !(group === "PNG" && PNG_HEADER.has(name));
   });
   return { tags: metadata.length, gps: metadata.some((k) => /GPS/i.test(k)), icc: keys.some(isIcc) };
 }

@@ -1,8 +1,8 @@
 # clean-assets-meta
 
-Removes metadata from images: camera and owner details, location, dates,
-editing software, keywords. It keeps the orientation and color profile so
-images look the same after cleaning. `apply` puts metadata back from a
+Removes metadata from images and videos: camera and owner details, location,
+dates, editing software, keywords. It keeps the orientation and color profile
+so files look the same after cleaning. `apply` puts metadata back from a
 reference file, e.g. the original of a stripped copy.
 
 Requires Node 24+ and exiftool (`brew install exiftool`).
@@ -20,6 +20,7 @@ from this folder.
 
 ```sh
 clean-assets-meta strip photo.jpg                  # replace the file with a clean one
+clean-assets-meta strip clip.mov                   # videos work the same way
 clean-assets-meta strip ./exports -r -o ./clean    # clean copies, originals untouched
 clean-assets-meta strip ./exports -r -n            # see what metadata each file has
 clean-assets-meta strip photo.jpg --gps-only       # remove location only
@@ -36,35 +37,56 @@ clean-assets-meta strip photo.jpg --all -k Copyright
 | `--keep-xattrs` | leave macOS extended attributes (download source, quarantine, Finder tags) |
 | `-n, --dry-run` | list files and their metadata, change nothing |
 
-Formats: JPEG, PNG, HEIC/HEIF, AVIF, TIFF, WebP, GIF. Exits 1 if a file
-fails (the others are still cleaned) and 2 for bad arguments.
+Formats: JPEG, PNG, HEIC/HEIF, AVIF, TIFF, WebP, GIF, and MP4, MOV, M4V and
+3GP videos. Exits 1 if a file fails (the others are still cleaned) and 2 for
+bad arguments.
+
+#### Videos
+
+A video's creation dates are stored in its headers. They can't be removed,
+only set to zero, which is what `strip` does (`--gps-only` leaves them). The
+rotation and color information are part of the video track and always stay,
+even with `--all`. exiftool rewrites the whole file, so cleaning needs free disk
+space the size of the video.
+
+What `strip` can't remove:
+
+- **Location recorded along the video**: GoPro, DJI drone, dashcam and some
+  phone videos store GPS as a separate track inside the file, not as tags, so
+  the route stays after cleaning.
+- **MKV, WebM and AVI**: exiftool can't write them, so they aren't supported.
+
+Stripping an iPhone Live Photo's video breaks its link to the photo; keep it
+with `-k ContentIdentifier`.
 
 ### Applying metadata from a reference
 
 ```sh
 clean-assets-meta apply original.jpg clean.jpg     # copy original.jpg's metadata onto clean.jpg
-clean-assets-meta apply original.jpg ./variants    # the same metadata on every image in a folder
-clean-assets-meta apply ./exports ./clean -r       # each image gets the file at the same path in ./exports
+clean-assets-meta apply original.jpg ./variants    # the same metadata on every file in a folder
+clean-assets-meta apply ./exports ./clean -r       # each file gets the one at the same path in ./exports
 clean-assets-meta apply original.jpg clean.jpg --no-gps -x Artist
 ```
 
 Tags go back to where they were in the reference (EXIF, XMP, IPTC…), added to
-what the image already has; tags of the same name are replaced. The
+what the file already has; tags of the same name are replaced. The
 orientation and color profile are only copied when the image has none, since
 an edited copy may have been rotated or converted. The orientation also needs
 the image to have the reference's pixel size: an export without one is usually
-already upright, and rotating it again would turn it sideways. Images are updated in place
-and keep their extended attributes.
+already upright, and rotating it again would turn it sideways. A video's
+header dates are copied, but never its rotation: every video has one, so
+there's no telling whether an export was already turned. Files are updated in
+place and keep their extended attributes.
 
 | Option | |
 |---|---|
 | `-r, --recursive` | also look in subfolders |
 | `--no-gps` | leave out location data |
 | `-x, --exclude <tag>` | leave out this tag, e.g. `Artist` or `XMP:all` (repeatable) |
-| `-n, --dry-run` | list which reference goes to which image, change nothing |
+| `-n, --dry-run` | list which reference goes to which file, change nothing |
 
-With folders, images that have no file at the same path in the reference
-folder are skipped and reported. Exits 1 if an image fails or is skipped.
+With folders, files that have no file at the same path in the reference
+folder are skipped and reported. Exits 1 if a file fails or is skipped.
 
 macOS's `com.apple.provenance` attribute stays: the system protects it.
 

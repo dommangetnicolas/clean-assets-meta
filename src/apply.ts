@@ -1,5 +1,5 @@
 /**
- * Copies metadata from a reference file onto another one with exiftool, e.g. to
+ * Copies metadata from a reference image or video onto another one with exiftool, e.g. to
  * put back the metadata of an original on a copy that was stripped or exported
  * without it.
  *
@@ -10,13 +10,15 @@
  * only copied when the target has none. The orientation also needs the target
  * to have the reference's pixel size: an export without one is usually already
  * upright (often resized too), and rotating it again would turn it sideways.
+ * A video's rotation is never copied: it is part of the video track, and every
+ * video has one, so there is no telling whether an export was already turned.
  * A reference folder is matched to a target folder by relative path.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { exiftool, isImage, requireExiftool } from "./exiftool.ts";
-import { listImages } from "./strip.ts";
+import { exiftool, isMedia, requireExiftool } from "./exiftool.ts";
+import { listMedia } from "./strip.ts";
 
 export type ApplyOptions = {
   /** Leave out location data. */
@@ -31,6 +33,8 @@ export type Pair = { ref: string; dest: string };
 /** An image's stored pixel size, before any orientation is applied. */
 export type Size = { width: number; height: number };
 
+const VIDEO_FILE_TYPE = ["MajorBrand", "MinorVersion", "CompatibleBrands"];
+
 /**
  * The exiftool commands (run one after another on the target) that copy metadata
  * from `ref`: everything but the orientation, then the orientation if the target
@@ -42,7 +46,9 @@ export function applyArgs(ref: string, opts: ApplyOptions = {}, refSize?: Size):
   const excluded = (tag: string) => exclude.some((t) => t.toLowerCase().split(":").pop() === tag.toLowerCase());
   const from = ["-tagsFromFile", ref];
   return [
-    [...from, "-all:all", "--Orientation", ...exclude.map((t) => `--${t}`)],
+    // A video's file type (MajorBrand…) is listed as tags but isn't metadata:
+    // exiftool would copy it into the target's metadata keys
+    [...from, "-all:all", "--Orientation", ...VIDEO_FILE_TYPE.map((t) => `--${t}`), ...exclude.map((t) => `--${t}`)],
     ...(excluded("Orientation") || !refSize ? [] : [[
       "-if", `not $Orientation and $ImageWidth# == ${refSize.width} and $ImageHeight# == ${refSize.height}`,
       ...from, "-Orientation",
@@ -83,15 +89,15 @@ export function pairTargets(reference: string, targets: string[], { recursive = 
     if (targets.length !== 1 || !stats[0].isDirectory()) throw new Error("a reference folder needs one target folder");
     const dir = path.resolve(targets[0]);
     if (dir === ref) throw new Error("the reference and target folders are the same");
-    for (const file of listImages(dir, recursive)) {
+    for (const file of listMedia(dir, recursive)) {
       const refFile = path.join(ref, path.relative(dir, file));
       if (fs.statSync(refFile, { throwIfNoEntry: false })?.isFile()) add(refFile, file);
       else unmatched.push(file);
     }
   } else {
     targets.forEach((t, i) => {
-      if (stats[i].isDirectory()) for (const file of listImages(t, recursive)) add(ref, file);
-      else if (!isImage(t)) throw new Error(`not a supported image: ${t}`);
+      if (stats[i].isDirectory()) for (const file of listMedia(t, recursive)) add(ref, file);
+      else if (!isMedia(t)) throw new Error(`not a supported image or video: ${t}`);
       else add(ref, t);
     });
   }

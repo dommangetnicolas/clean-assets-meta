@@ -130,7 +130,7 @@ describe("cli", () => {
     assert.equal(tags.trim(), "Me", "Copyright kept, Make gone");
 
     const off = cli(cwd, "strip", "imgs", "-p", "web", "--no-recursive", "-n");
-    assert.match(off.out, /no images found/);
+    assert.match(off.out, /no images or videos found/);
     assert.match(cli(cwd, "strip", "imgs", "-p", "nope").out, /no preset named "nope"/);
     assert.match(cli(cwd, "apply", "a.jpg", "b.jpg", "-p", "web").out, /no options for apply/);
   });

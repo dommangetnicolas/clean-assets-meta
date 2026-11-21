@@ -27,6 +27,17 @@ function tagged(fixture: string, name: string): string {
   return file;
 }
 
+/** A copy of a video fixture with phone-like tags and header dates, turned 90°. */
+function taggedVideo(fixture: string, name: string): string {
+  const file = path.join(dir, name);
+  fs.copyFileSync(path.join(FIXTURES, fixture), file);
+  execFileSync("exiftool", ["-q", "-m", "-overwrite_original", "-Keys:Make=Apple", "-Keys:GPSCoordinates=48.85, 2.35, 0",
+    "-UserData:Artist=Someone", "-XMP-dc:Creator=Someone", "-QuickTime:CreateDate=2026:01:02 03:04:05",
+    "-TrackCreateDate=2026:01:02 03:04:05", "-Rotation=90", file]);
+  return file;
+}
+const rotationOf = (file: string) => Number(execFileSync("exiftool", ["-s3", "-n", "-Rotation", file], { encoding: "utf8" }).trim());
+
 /** A stripped copy of `src` at `name`. */
 async function stripped(src: string, name: string, all = false): Promise<string> {
   const file = path.join(dir, name);
@@ -47,10 +58,12 @@ const names = async (file: string) => Object.keys(await tagsOf(file)).map((k) =>
 before(() => (dir = fs.mkdtempSync(path.join(os.tmpdir(), "clean-assets-meta-apply-"))));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+const FILE_TYPE = ["--MajorBrand", "--MinorVersion", "--CompatibleBrands"];
+
 describe("applyArgs", () => {
   test("copies all tags to the same groups, then fills in orientation and color profile", () => {
     assert.deepEqual(applyArgs("r.jpg", {}, { width: 40, height: 30 }), [
-      ["-tagsFromFile", "r.jpg", "-all:all", "--Orientation"],
+      ["-tagsFromFile", "r.jpg", "-all:all", "--Orientation", ...FILE_TYPE],
       ["-if", "not $Orientation and $ImageWidth# == 40 and $ImageHeight# == 30", "-tagsFromFile", "r.jpg", "-Orientation"],
       ["-if", "not $ICC_Profile:all", "-tagsFromFile", "r.jpg", "-ICC_Profile"],
     ]);
@@ -60,7 +73,7 @@ describe("applyArgs", () => {
   });
   test("leaves out excluded tags", () => {
     const [copy, ...fill] = applyArgs("r.jpg", { noGps: true, exclude: ["Artist", "IFD0:Orientation", "icc_profile"] });
-    assert.deepEqual(copy, ["-tagsFromFile", "r.jpg", "-all:all", "--Orientation", "--gps:all", "--GPS*", "--Artist", "--IFD0:Orientation", "--icc_profile"]);
+    assert.deepEqual(copy, ["-tagsFromFile", "r.jpg", "-all:all", "--Orientation", ...FILE_TYPE, "--gps:all", "--GPS*", "--Artist", "--IFD0:Orientation", "--icc_profile"]);
     assert.deepEqual(fill, []);
   });
 });
@@ -122,6 +135,26 @@ describe("apply", () => {
       const left = await names(clean);
       for (const tag of want) assert.ok(left.includes(tag), `${tag} should be back: ${left.join()}`);
       assert.equal((await tagsOf(clean))["IFD0:Orientation"], 6);
+    });
+  }
+
+  for (const fixture of ["tiny.mov", "tiny.mp4"]) {
+    test(`${fixture}: puts back what strip removed, header dates included, but not the rotation`, async () => {
+      const original = taggedVideo(fixture, `orig-${fixture}`);
+      const clean = await stripped(original, `clean-${fixture}`);
+      // An export already turned upright
+      execFileSync("exiftool", ["-q", "-m", "-overwrite_original", "-Rotation=0", clean]);
+
+      const { applied, failed } = await apply(pairTargets(original, [clean]).pairs);
+      assert.deepEqual(failed, []);
+      assert.deepEqual(applied, [clean]);
+
+      const tags = await tagsOf(clean);
+      for (const tag of ["Keys:Make", "Keys:GPSCoordinates", "UserData:Artist", "XMP-dc:Creator"]) assert.ok(tag in tags, `${tag} should be back: ${Object.keys(tags).join()}`);
+      assert.equal(tags["QuickTime:CreateDate"], "2026:01:02 03:04:05");
+      assert.equal(tags["Track1:TrackCreateDate"], "2026:01:02 03:04:05");
+      assert.ok(!Object.keys(tags).some((k) => k.endsWith("MajorBrand") && !k.startsWith("QuickTime:")), "file type isn't copied as metadata");
+      assert.equal(rotationOf(clean), 0);
     });
   }
 

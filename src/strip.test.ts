@@ -27,22 +27,42 @@ function tagged(fixture: string, name = fixture): string {
   return file;
 }
 
+// Tags a phone video would have, in the places exiftool reads them from
+const VIDEO_TAGGED = [
+  "-Keys:Make=Apple", "-Keys:Model=iPhone", "-Keys:Software=17.0", "-Keys:CreationDate=2026:01:02 03:04:05+01:00",
+  "-Keys:GPSCoordinates=48.85, 2.35, 0", "-Keys:LocationName=Home", "-UserData:Artist=Someone",
+  "-ItemList:Title=private", "-XMP-dc:Creator=Someone",
+  "-QuickTime:CreateDate=2026:01:02 03:04:05", "-TrackCreateDate=2026:01:02 03:04:05", "-MediaCreateDate=2026:01:02 03:04:05",
+];
+
+/** A copy of a video fixture with the tags above, turned 90°. */
+function taggedVideo(fixture: string, name: string, target: string): string {
+  const file = path.join(target, name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.copyFileSync(path.join(FIXTURES, fixture), file);
+  execFileSync("exiftool", ["-q", "-m", "-overwrite_original", ...VIDEO_TAGGED, "-Rotation=90", file]);
+  return file;
+}
+const rotationOf = (file: string) => Number(execFileSync("exiftool", ["-s3", "-n", "-Rotation", file], { encoding: "utf8" }).trim());
+
 const tagsOf = async (file: string) => (await readTags([file])).get(path.resolve(file)) ?? {};
 const names = (tags: Record<string, unknown>) => Object.keys(tags).map((k) => k.split(":")[1]);
 
 before(() => (dir = fs.mkdtempSync(path.join(os.tmpdir(), "clean-assets-meta-"))));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+const DATES = ["-QuickTime:CreateDate=", "-QuickTime:ModifyDate=", "-Track*Date=", "-Media*Date="];
+
 describe("stripArgs", () => {
   test("keeps orientation and color profile by default", () => {
-    assert.deepEqual(stripArgs(), ["-all=", "-tagsFromFile", "@", "-Orientation", "-ICC_Profile"]);
+    assert.deepEqual(stripArgs(), ["-all=", ...DATES, "-tagsFromFile", "@", "-Orientation", "-ICC_Profile"]);
   });
   test("--all keeps nothing unless asked", () => {
-    assert.deepEqual(stripArgs({ all: true }), ["-all="]);
-    assert.deepEqual(stripArgs({ all: true, keep: ["Copyright"] }), ["-all=", "-tagsFromFile", "@", "-Copyright"]);
+    assert.deepEqual(stripArgs({ all: true }), ["-all=", ...DATES]);
+    assert.deepEqual(stripArgs({ all: true, keep: ["Copyright"] }), ["-all=", ...DATES, "-tagsFromFile", "@", "-Copyright"]);
   });
   test("--gps-only refuses other options", () => {
-    assert.deepEqual(stripArgs({ gpsOnly: true }), ["-gps:all=", "-GPS*="]);
+    assert.deepEqual(stripArgs({ gpsOnly: true }), ["-gps:all=", "-GPS*=", "-QuickTime:Location*="]);
     assert.throws(() => stripArgs({ gpsOnly: true, all: true }));
   });
 });
@@ -51,11 +71,11 @@ describe("collectTargets", () => {
   test("finds images in folders, in subfolders with recursive, and maps them to the output folder", () => {
     const src = path.join(dir, "collect");
     fs.mkdirSync(path.join(src, "sub"), { recursive: true });
-    for (const f of ["a.jpg", "b.PNG", "notes.txt", "._a.jpg", "sub/c.heic"]) fs.writeFileSync(path.join(src, f), "");
+    for (const f of ["a.jpg", "b.PNG", "v.MOV", "notes.txt", "._a.jpg", "sub/c.heic", "sub/d.mp4", "sub/e.mkv"]) fs.writeFileSync(path.join(src, f), "");
 
-    assert.deepEqual(collectTargets([src]).map((t) => path.basename(t.src)).sort(), ["a.jpg", "b.PNG"]);
+    assert.deepEqual(collectTargets([src]).map((t) => path.basename(t.src)).sort(), ["a.jpg", "b.PNG", "v.MOV"]);
     const deep = collectTargets([src], { recursive: true, outDir: path.join(dir, "out") });
-    assert.equal(deep.length, 3);
+    assert.equal(deep.length, 5);
     assert.equal(deep.find((t) => t.src.endsWith("c.heic"))?.dest, path.join(dir, "out", "sub", "c.heic"));
   });
   test("rejects missing files, unsupported files and clashing outputs", () => {
@@ -88,6 +108,36 @@ describe("strip", () => {
       assert.deepEqual(summarize(left), { tags: 1, gps: false, icc: hadIcc }, "only Orientation counts as metadata");
     });
   }
+
+  for (const fixture of ["tiny.mov", "tiny.mp4"]) {
+    test(`${fixture}: removes metadata, zeroes the header dates, keeps the rotation`, async () => {
+      const file = taggedVideo(fixture, `default-${fixture}`, dir);
+      const before = await tagsOf(file);
+      assert.ok(summarize(before).gps);
+      assert.equal(summarize(before).tags, 15, Object.keys(before).join());
+
+      const { cleaned, failed } = await strip(collectTargets([file]));
+      assert.deepEqual(failed, []);
+      assert.deepEqual(cleaned, [file]);
+
+      const left = await tagsOf(file);
+      for (const gone of ["Make", "Model", "Software", "CreationDate", "GPSCoordinates", "LocationName", "Artist", "Title", "Creator"]) {
+        assert.ok(!names(left).includes(gone), `${gone} should be gone: ${JSON.stringify(left)}`);
+      }
+      for (const [key, value] of Object.entries(left)) if (key.endsWith("Date")) assert.match(String(value), /^[0: ]+$/, key);
+      assert.equal(rotationOf(file), 90);
+      assert.deepEqual(summarize(left), { tags: 0, gps: false, icc: false });
+    });
+  }
+
+  test("video --gps-only removes the coordinates and place name, and nothing else", async () => {
+    const file = taggedVideo("tiny.mov", "gps.mov", dir);
+    await strip(collectTargets([file]), { gpsOnly: true });
+    const left = names(await tagsOf(file));
+    assert.ok(!left.includes("GPSCoordinates") && !left.includes("LocationName"), left.join());
+    assert.ok(left.includes("Make") && left.includes("CreationDate") && left.includes("Artist"));
+    assert.equal((await tagsOf(file))["QuickTime:CreateDate"], "2026:01:02 03:04:05");
+  });
 
   test("--all removes orientation and color profile too; --keep keeps a tag", async () => {
     const file = tagged("tiny.jpg", "all.jpg");
