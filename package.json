@@ -1,17 +1,43 @@
 {
   "name": "clean-assets-meta",
-  "private": true,
+  "version": "0.0.0-development",
+  "description": "Remove metadata (location, camera, dates, software) from images and videos, or copy it back from a reference file. A CLI around exiftool.",
+  "keywords": [
+    "exif",
+    "exiftool",
+    "metadata",
+    "gps",
+    "privacy",
+    "strip",
+    "image",
+    "video",
+    "heic",
+    "cli"
+  ],
+  "homepage": "https://github.com/dommangetnicolas/clean-assets-meta#readme",
+  "bugs": "https://github.com/dommangetnicolas/clean-assets-meta/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dommangetnicolas/clean-assets-meta.git"
+  },
+  "license": "MIT",
+  "author": "Nicolas Dommanget",
   "type": "module",
   "bin": {
-    "clean-assets-meta": "src/cli.ts"
+    "clean-assets-meta": "dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "start": "node src/cli.ts",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"src/**/*.test.ts\""
+    "test": "node --test \"src/**/*.test.ts\"",
+    "prepack": "pnpm build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

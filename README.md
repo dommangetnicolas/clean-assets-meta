@@ -1,20 +1,44 @@
 # clean-assets-meta
 
-Removes metadata from images and videos: camera and owner details, location,
-dates, editing software, keywords. It keeps the orientation and color profile
-so files look the same after cleaning. `apply` puts metadata back from a
-reference file, e.g. the original of a stripped copy.
+[![CI](https://github.com/dommangetnicolas/clean-assets-meta/actions/workflows/ci.yml/badge.svg)](https://github.com/dommangetnicolas/clean-assets-meta/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/clean-assets-meta)](https://www.npmjs.com/package/clean-assets-meta)
+![Node 24+](https://img.shields.io/badge/node-24%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Requires Node 24+ and exiftool (`brew install exiftool`).
+A command-line tool that removes metadata from images and videos: camera and
+owner details, location, dates, editing software, keywords. It keeps the
+orientation and color profile so files look the same after cleaning. `apply`
+puts metadata back from a reference file, e.g. the original of a stripped copy.
+
+It's a careful wrapper around [exiftool](https://exiftool.org): it knows which
+tags matter for how a file looks, zeroes the dates video headers can't drop,
+clears macOS extended attributes, and can write clean copies while leaving
+the originals alone.
+
+## Installation
+
+Requires [Node.js](https://nodejs.org) 24 or later and
+[exiftool](https://exiftool.org/install.html).
 
 ```sh
-pnpm install
-pnpm add -g "$PWD"              # makes `clean-assets-meta` available everywhere
+brew install exiftool          # macOS; or your package manager's exiftool package
+npm install -g clean-assets-meta
 ```
 
-On pnpm 11 and earlier, `pnpm link --global` does the same; `npm link` works
-with any version. To run it without installing, use `pnpm start <command>`
-from this folder.
+pnpm (`pnpm add -g clean-assets-meta`) and other package managers work too. To
+try it without installing, run `npx clean-assets-meta strip photo.jpg -n`.
+
+It's developed and tested on macOS. It runs on Linux too, but isn't tested
+there yet; reports are welcome.
+
+### From source
+
+```sh
+git clone https://github.com/dommangetnicolas/clean-assets-meta.git
+cd clean-assets-meta
+pnpm install
+pnpm start strip photo.jpg -n   # runs src/cli.ts directly, no build step
+```
 
 ## Usage
 
@@ -125,9 +149,11 @@ per command:
 
 A relative `out` is relative to the folder you run the command from.
 
-## Development
+## Contributing
 
-```sh
-pnpm test        # needs exiftool
-pnpm typecheck
-```
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) to get set
+up, and the [changelog](CHANGELOG.md) for what's new.
+
+## License
+
+[MIT](LICENSE)

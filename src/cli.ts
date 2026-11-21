@@ -8,6 +8,7 @@
  * Requires exiftool (brew install exiftool).
  */
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -76,7 +77,8 @@ Commands:
   apply <reference> <file|folder>...   copy metadata from a reference file
   presets                              list saved presets
 
-Run clean-assets-meta <command> --help for its options.`;
+Run clean-assets-meta <command> --help for its options, or
+clean-assets-meta --version for the version.`;
 
 function fail(message: string): never {
   console.error(`clean-assets-meta: ${message}`);
@@ -86,6 +88,11 @@ function fail(message: string): never {
 const [command, ...rest] = process.argv.slice(2);
 if (!command || command === "-h" || command === "--help") {
   console.log(USAGE);
+  process.exit(0);
+}
+if (command === "-v" || command === "--version") {
+  // package.json sits one level up from both src/ and dist/
+  console.log(JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
   process.exit(0);
 }
 // Short paths under the current folder, full ones elsewhere

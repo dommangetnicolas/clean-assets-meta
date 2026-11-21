@@ -1,0 +1,123 @@
+name: Release
+
+# Publishes a release when a "release/vX.Y.Z" pull request (opened by the
+# Prepare release workflow) is merged, or when a vX.Y.Z tag is pushed by hand.
+# Every step can be rerun: one that already happened (npm version published,
+# tag pushed) is skipped.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  id-token: write # npm trusted publishing and provenance
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'release/v'))
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="${HEAD_REF#release/}"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Not a release tag: $tag"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.18.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install exiftool
+        run: brew install exiftool
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The version is never written in the source: it comes from the tag.
+      - name: Set version
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Test
+        run: |
+          pnpm typecheck
+          pnpm test
+
+      - name: Pack
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          pnpm pack
+          test -f "clean-assets-meta-$VERSION.tgz"
+
+      - name: Publish to npm
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          # Not needed once trusted publishing is set up on npmjs.com (see docs/release.md)
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm view "clean-assets-meta@$VERSION" version >/dev/null 2>&1; then
+            echo "clean-assets-meta@$VERSION is already on npm, skipping"
+          else
+            npm publish "clean-assets-meta-$VERSION.tgz" --access public --provenance
+          fi
+
+      - name: Tag the merge commit
+        if: github.event_name == 'pull_request'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists, skipping"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "clean-assets-meta $VERSION"
+          git push origin "$TAG"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping"; exit 0
+          fi
+          scripts/changelog.sh notes "$VERSION" > "$RUNNER_TEMP/notes.md"
+          if [[ -s "$RUNNER_TEMP/notes.md" ]]; then
+            notes=(--notes-file "$RUNNER_TEMP/notes.md")
+          else
+            notes=(--generate-notes)
+          fi
+          gh release create "$TAG" "clean-assets-meta-$VERSION.tgz" \
+            --title "clean-assets-meta $VERSION" --verify-tag "${notes[@]}"

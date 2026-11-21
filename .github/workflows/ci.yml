@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.18.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install exiftool
+        run: brew install exiftool
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # Node won't run TypeScript from node_modules, so check the published
+      # package (compiled to dist/) works once installed.
+      - name: Pack and try the package
+        run: |
+          pnpm pack --pack-destination "$RUNNER_TEMP"
+          npm install -g "$RUNNER_TEMP"/clean-assets-meta-*.tgz
+          clean-assets-meta --version
+          clean-assets-meta strip src/fixtures/tiny.jpg --dry-run
