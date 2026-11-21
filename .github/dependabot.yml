@@ -8,3 +8,7 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # Types must match the oldest supported Node (engines.node), not the latest
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
