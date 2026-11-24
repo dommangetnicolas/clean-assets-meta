@@ -1,7 +1,7 @@
 # Releasing clean-assets-meta
 
 Releases are tested, published to npm and announced on GitHub by GitHub Actions. You never run
-`npm publish` by hand (except the very first time, see [One-time setup](#one-time-setup)).
+`npm publish` by hand, and no npm token is stored anywhere (see [npm publishing](#npm-publishing)).
 
 ## Versioning
 
@@ -69,36 +69,24 @@ git push origin v1.2.3
 
 Don't push the tag for a `release/v*` pull request you merged: merging it already publishes.
 
-## One-time setup
+## npm publishing
 
-npm needs to trust the workflow before it can publish.
+The Release workflow publishes with npm [trusted publishing](https://docs.npmjs.com/trusted-publishers):
+npm trusts `release.yml` in this repository and trades the run's OIDC token for a short-lived
+publish token. There is no `NPM_TOKEN` secret, and every version gets a
+[provenance](https://docs.npmjs.com/generating-provenance-statements) statement linking it to the
+run that built it (this needs the repository to stay public).
 
-1. **First publish.** npm only lets you configure trusted publishing for a package that exists, so
-   either publish `1.0.0` from your machine once:
+It's configured on npmjs.com, in the package's **Settings**:
 
-   ```bash
-   npm login
-   npm version 1.0.0 --no-git-tag-version
-   pnpm pack && npm publish clean-assets-meta-1.0.0.tgz --access public
-   git checkout package.json
-   ```
+- **Trusted Publisher**: GitHub Actions, `dommangetnicolas` / `clean-assets-meta`, workflow
+  `release.yml`, no environment, with **Allow `npm publish`** ticked. Without that box, the
+  publisher may only `npm stage publish` and the "Publish to npm" step fails.
+- **Publishing access**: two-factor authentication required, tokens that bypass it disallowed.
 
-   then push the `v1.0.0` tag so the workflow creates the GitHub release (it skips the npm step
-   for a version that's already published); or add an `NPM_TOKEN` secret (below) and let the
-   workflow do the first publish too.
-
-2. **Trusted publishing (recommended).** On npmjs.com, open the package's **Settings** →
-   **Trusted Publisher**, choose GitHub Actions, and enter `dommangetnicolas`,
-   `clean-assets-meta` and the workflow file `release.yml`. The workflow then publishes with a
-   short-lived token, no secret needed, and npm shows where each version was built. Then set
-   **Publishing access** to require two-factor authentication and disallow tokens.
-
-3. **Or a token.** Create a granular access token on npmjs.com with read and write access to
-   `clean-assets-meta` and add it as the `NPM_TOKEN` repository secret
-   (**Settings** → **Secrets and variables** → **Actions**). Remove it once trusted publishing is
-   set up.
-
-Provenance needs the repository to be public.
+If you rename `release.yml` or move the repository, update the trusted publisher on npmjs.com,
+or publishing fails with an authentication error. The connection can't be edited: delete it and
+create a new one.
 
 ## If something goes wrong
 
