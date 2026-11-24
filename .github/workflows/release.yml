@@ -78,11 +78,11 @@ jobs:
           pnpm pack
           test -f "clean-assets-meta-$VERSION.tgz"
 
+      # Trusted publishing: npm trades this run's OIDC token (id-token: write)
+      # for a short-lived publish token, so no npm secret is stored here.
       - name: Publish to npm
         env:
           VERSION: ${{ steps.tag.outputs.version }}
-          # Not needed once trusted publishing is set up on npmjs.com (see docs/release.md)
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if npm view "clean-assets-meta@$VERSION" version >/dev/null 2>&1; then
             echo "clean-assets-meta@$VERSION is already on npm, skipping"
